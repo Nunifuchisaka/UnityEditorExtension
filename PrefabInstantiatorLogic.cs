@@ -8,11 +8,7 @@ namespace Nunifuchisaka
   {
     public static void DuplicatePrefabs(GameObject source, GameObject destination)
     {
-      if (source == null || destination == null)
-      {
-        Debug.LogError("[PrefabInstantiator] ソースオブジェクトまたは複製先オブジェクトが指定されていません。");
-        return;
-      }
+      if (!AvatarCopier.ValidateSourceAndDestination(source, destination, "[PrefabInstantiator]")) return;
 
       Undo.SetCurrentGroupName("Duplicate Prefab Instances");
       int undoGroup = Undo.GetCurrentGroup();

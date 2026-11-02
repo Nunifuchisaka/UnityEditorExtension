@@ -34,19 +34,15 @@ namespace Nunifuchisaka
 
     public static void ExecuteCopy(GameObject source, GameObject dest)
     {
-      if (source == null || dest == null)
-      {
-        Debug.LogError("[BlendShapeCopier] From と To の両方のオブジェクトを指定してください。");
-        return;
-      }
+      if (!AvatarCopier.ValidateSourceAndDestination(source, dest, "[BlendShapeCopier]")) return;
 
       Undo.SetCurrentGroupName("Copy BlendShapes");
       int group = Undo.GetCurrentGroup();
 
       try
       {
-        CopyBlendShapesRecursively(source.transform, dest.transform);
-        Debug.Log("[BlendShapeCopier] Complete.");
+        int count = CopyBlendShapesRecursively(source.transform, dest.transform);
+        Debug.Log($"[BlendShapeCopier] Complete. {count} 個のSkinnedMeshRendererのBlendShapeウェイトをコピーしました。");
       }
       catch (Exception e)
       {
@@ -58,8 +54,9 @@ namespace Nunifuchisaka
       }
     }
 
-    private static void CopyBlendShapesRecursively(Transform source, Transform dest)
+    private static int CopyBlendShapesRecursively(Transform source, Transform dest)
     {
+      int count = 0;
       var sourceSmr = source.GetComponent<SkinnedMeshRenderer>();
       var destSmr = dest.GetComponent<SkinnedMeshRenderer>();
 
@@ -80,7 +77,7 @@ namespace Nunifuchisaka
               destSmr.SetBlendShapeWeight(destIndex, weight);
             }
           }
-          Debug.Log($"[BlendShapeCopier] Copied BlendShape weights for '{dest.name}'");
+          count++;
         }
       }
 
@@ -89,9 +86,10 @@ namespace Nunifuchisaka
         Transform destChild = dest.Find(sourceChild.name);
         if (destChild != null)
         {
-          CopyBlendShapesRecursively(sourceChild, destChild);
+          count += CopyBlendShapesRecursively(sourceChild, destChild);
         }
       }
+      return count;
     }
   }
 }

@@ -15,11 +15,60 @@ namespace Nunifuchisaka
     private bool copyMaComponents = true;
     private bool copyAaoComponents = true;
     private bool copyFloorAdjuster = true;
+    private bool keepDestBlueprintId = true;
 
     [MenuItem("Tools/Nunifuchisaka/Avatar Copier...", false, 1)]
     public static void ShowWindow()
     {
       GetWindow<AvatarCopier>("Avatar Copier");
+    }
+
+    /// <summary>
+    /// From/To の組み合わせを検証する（未指定・同一オブジェクト・親子関係）。各ツールの Execute から共通で呼ぶ。
+    /// </summary>
+    public static bool ValidateSourceAndDestination(GameObject source, GameObject dest, string logPrefix)
+    {
+      if (source == null || dest == null)
+      {
+        Debug.LogError($"{logPrefix} From と To の両方のオブジェクトを指定してください。");
+        return false;
+      }
+      if (source == dest)
+      {
+        Debug.LogError($"{logPrefix} From と To に同じオブジェクトが指定されています。");
+        return false;
+      }
+      if (dest.transform.IsChildOf(source.transform) || source.transform.IsChildOf(dest.transform))
+      {
+        Debug.LogError($"{logPrefix} From と To が親子関係にあります。別々のオブジェクトを指定してください。");
+        return false;
+      }
+      return true;
+    }
+
+    /// <summary>
+    /// Copy All の実行前チェック。同名の兄弟オブジェクトがある場合は対応付けが崩れるため、続行するか確認する。
+    /// </summary>
+    private bool ConfirmCopyAll()
+    {
+      if (!ValidateSourceAndDestination(sourceObject, destinationObject, "[AvatarCopier]")) return false;
+
+      var duplicates = new List<string>();
+      foreach (var path in AvatarComparer.FindDuplicateSiblingPaths(sourceObject)) duplicates.Add("From: " + path);
+      foreach (var path in AvatarComparer.FindDuplicateSiblingPaths(destinationObject)) duplicates.Add("To: " + path);
+      if (duplicates.Count == 0) return true;
+
+      foreach (var duplicate in duplicates)
+      {
+        Debug.LogWarning($"[AvatarCopier] 同名の兄弟オブジェクトがあります: {duplicate}");
+      }
+      const int MaxListed = 10;
+      string list = string.Join("\n", duplicates.GetRange(0, Mathf.Min(duplicates.Count, MaxListed)));
+      if (duplicates.Count > MaxListed) list += $"\n...ほか {duplicates.Count - MaxListed} 件（Consoleを参照）";
+      return EditorUtility.DisplayDialog(
+        "同名の兄弟オブジェクトがあります",
+        "以下のオブジェクトは同じ階層に同名の兄弟があるため、正しく対応付けできません（1つ目にだけコピーされます）。\n\n" + list + "\n\n続行しますか？",
+        "続行", "キャンセル");
     }
 
     private void OnGUI()
@@ -46,7 +95,7 @@ namespace Nunifuchisaka
         EditorGUILayout.BeginVertical(GUI.skin.box);
         GUILayout.Label("すべての機能を順番に実行", EditorStyles.boldLabel);
         EditorGUILayout.Space(5);
-        if (GUILayout.Button("Copy All"))
+        if (GUILayout.Button("Copy All") && ConfirmCopyAll())
         {
           // 全ステップをひとつのUndoグループにまとめ、Ctrl+Z一発で戻せるようにする
           Undo.IncrementCurrentGroup();
@@ -58,7 +107,7 @@ namespace Nunifuchisaka
           MaterialCopier.ExecuteCopy(sourceObject, destinationObject);
           BlendShapeCopier.ExecuteCopy(sourceObject, destinationObject);
           SyncActiveState.Execute(sourceObject, destinationObject);
-          ComponentCopier.ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents);
+          ComponentCopier.ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents, keepDestBlueprintId);
 
           Undo.CollapseUndoOperations(undoGroup);
         }
@@ -119,9 +168,10 @@ namespace Nunifuchisaka
         copyAaoComponents = EditorGUILayout.Toggle(new GUIContent("AAO TraceAndOptimize", "TraceAndOptimizeコンポーネントをコピーします。"), copyAaoComponents);
         copyFloorAdjuster = EditorGUILayout.Toggle(new GUIContent("FloorAdjuster", "FloorAdjusterコンポーネントをコピーします。"), copyFloorAdjuster);
         EditorGUI.EndDisabledGroup();
+        keepDestBlueprintId = EditorGUILayout.Toggle(new GUIContent("Keep Dest Blueprint ID", ComponentCopier.KeepBlueprintIdTooltip), keepDestBlueprintId);
         if (GUILayout.Button("Copy Component"))
         {
-          ComponentCopier.ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents);
+          ComponentCopier.ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents, keepDestBlueprintId);
         }
         EditorGUILayout.EndVertical();
       }
@@ -137,7 +187,10 @@ namespace Nunifuchisaka
 
       EditorGUI.BeginDisabledGroup(!(destinationObject != null));
       {
-        if (GUILayout.Button("Revert All 'To Object'"))
+        if (GUILayout.Button("Revert All 'To Object'") && EditorUtility.DisplayDialog(
+              "Revert All の確認",
+              $"'{destinationObject.name}' のPrefabインスタンスのオーバーライドをすべて元に戻します。\nコピーで追加したオブジェクトやコンポーネントも削除されます（Undoで戻せます）。\n\n実行しますか？",
+              "Revert", "キャンセル"))
         {
           ObjectReverter.RevertAll(destinationObject);
         }

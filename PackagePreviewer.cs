@@ -69,14 +69,21 @@ namespace Nunifuchisaka
         GUILayout.Box(info.Icon, GUIStyle.none, GUILayout.Width(20), GUILayout.Height(20));
         EditorGUILayout.LabelField(new GUIContent(info.Path));
         Color originalColor = GUI.color;
-        GUI.color = info.Status == "Overwrite" ? Color.yellow : Color.green;
+        GUI.color = info.Status == "Overwrite" ? Color.yellow : info.Status == "Rename" ? new Color(1f, 0.6f, 0.3f) : Color.green;
         EditorGUILayout.LabelField(info.Status, GUILayout.Width(80));
         GUI.color = originalColor;
         EditorGUILayout.EndHorizontal();
         if (!string.IsNullOrEmpty(info.ExistingPath))
         {
           EditorGUI.indentLevel++;
-          EditorGUILayout.LabelField(new GUIContent($"└ Overwrites: {info.ExistingPath}", "This is the path of the existing asset in your project that will be overwritten."), EditorStyles.miniLabel);
+          if (info.Status == "Rename")
+          {
+            EditorGUILayout.LabelField(new GUIContent($"└ Conflicts: {info.ExistingPath}", "同じパスに別のアセット（GUIDが異なる）が既にあるため、上書きされずに別名でインポートされます。"), EditorStyles.miniLabel);
+          }
+          else
+          {
+            EditorGUILayout.LabelField(new GUIContent($"└ Overwrites: {info.ExistingPath}", "This is the path of the existing asset in your project that will be overwritten."), EditorStyles.miniLabel);
+          }
           EditorGUI.indentLevel--;
         }
       }
@@ -93,59 +100,112 @@ namespace Nunifuchisaka
       _assetInfos.Clear();
       var tempAssetInfos = new Dictionary<string, AssetInfo>();
 
+      // パッケージ全体をメモリに展開すると、大きなアバターパッケージ（展開後2GB超など）で失敗するため、
+      // tarエントリをストリームで順に読み、pathname 以外の中身は読み飛ばす
       using (FileStream fileStream = new FileStream(path, FileMode.Open, FileAccess.Read))
       using (GZipStream gzipStream = new GZipStream(fileStream, CompressionMode.Decompress))
-      using (MemoryStream memoryStream = new MemoryStream())
       {
-        gzipStream.CopyTo(memoryStream);
-        byte[] buffer = memoryStream.ToArray();
-        int offset = 0;
-
-        while (offset + 512 <= buffer.Length)
+        byte[] header = new byte[512];
+        while (ReadFully(gzipStream, header, 512))
         {
-          byte[] header = new byte[512];
-          Array.Copy(buffer, offset, header, 0, 512);
           if (header.All(b => b == 0)) { break; }
 
           string name = Encoding.UTF8.GetString(header, 0, 100).TrimEnd('\0');
-          string sizeStr = Encoding.UTF8.GetString(header, 124, 12).TrimEnd('\0').Trim();
-          long size = 0;
-          if (!string.IsNullOrEmpty(sizeStr))
+          long size = ParseTarSize(header);
+          long paddedSize = (size + 511) / 512 * 512;
+
+          string normalizedName = name.StartsWith("./") ? name.Substring(2) : name;
+          string[] parts = normalizedName.Split('/');
+          bool isPathname = !string.IsNullOrEmpty(name) && !name.Contains("PaxHeader") && !name.Contains("/._")
+                            && parts.Length == 2 && parts[1] == "pathname" && size > 0 && size < 64 * 1024;
+
+          if (isPathname)
           {
-            try { size = Convert.ToInt64(sizeStr, 8); } catch { /* ignore parse error */ }
+            byte[] data = new byte[paddedSize];
+            if (!ReadFully(gzipStream, data, (int)paddedSize)) { break; }
+            // pathname には "Assets/xxx\n00" のように2行目が付く場合があるため、1行目だけを使う
+            string assetPath = Encoding.UTF8.GetString(data, 0, (int)size).Split('\n')[0].Trim();
+            string guid = parts[0];
+            tempAssetInfos[guid] = CreateAssetInfo(guid, assetPath);
           }
-
-          if (!string.IsNullOrEmpty(name) && !name.Contains("PaxHeader") && !name.Contains("/._"))
+          else if (!Skip(gzipStream, paddedSize))
           {
-            string normalizedName = name.StartsWith("./") ? name.Substring(2) : name;
-            string[] parts = normalizedName.Split('/');
-
-            if (parts.Length == 2 && parts[1] == "pathname")
-            {
-              string guid = parts[0];
-              string assetPath = Encoding.UTF8.GetString(buffer, offset + 512, (int)size).Trim();
-              string existingPath = AssetDatabase.GUIDToAssetPath(guid);
-
-              var info = new AssetInfo
-              {
-                Guid = guid,
-                Path = assetPath,
-                Status = string.IsNullOrEmpty(existingPath) ? "New" : "Overwrite",
-                ExistingPath = existingPath,
-                Icon = AssetDatabase.GetCachedIcon(assetPath) ?? EditorGUIUtility.IconContent("DefaultAsset Icon").image
-              };
-              tempAssetInfos[guid] = info;
-            }
+            break;
           }
-
-          offset += 512;
-          offset += (int)size;
-          if (offset % 512 != 0) { offset += 512 - (offset % 512); }
         }
       }
 
       _assetInfos.AddRange(tempAssetInfos.Values);
-      _assetInfos.Sort((a, b) => a.Path.CompareTo(b.Path));
+      _assetInfos.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path));
+    }
+
+    private static AssetInfo CreateAssetInfo(string guid, string assetPath)
+    {
+      var info = new AssetInfo
+      {
+        Guid = guid,
+        Path = assetPath,
+        Status = "New",
+        Icon = AssetDatabase.GetCachedIcon(assetPath) ?? EditorGUIUtility.IconContent("DefaultAsset Icon").image
+      };
+
+      string existingPath = AssetDatabase.GUIDToAssetPath(guid);
+      if (!string.IsNullOrEmpty(existingPath) && AssetDatabase.GetMainAssetTypeAtPath(existingPath) != null)
+      {
+        // 同じGUIDのアセットが既にある：そのアセットが上書きされる（パスが違う場合は既存のパス側が更新される）
+        info.Status = "Overwrite";
+        info.ExistingPath = existingPath;
+        return info;
+      }
+
+      string guidAtPath = AssetDatabase.AssetPathToGUID(assetPath);
+      if (!string.IsNullOrEmpty(guidAtPath) && guidAtPath != guid && AssetDatabase.GetMainAssetTypeAtPath(assetPath) != null
+          && !AssetDatabase.IsValidFolder(assetPath))
+      {
+        // 同じパスに別のGUIDのアセットがある：上書きはされず、別名（"xxx 1.png" など）でインポートされる
+        info.Status = "Rename";
+        info.ExistingPath = assetPath;
+      }
+      return info;
+    }
+
+    private static long ParseTarSize(byte[] header)
+    {
+      // 8GB以上のファイルは base-256 形式（先頭バイトの最上位ビットが立つ）
+      if ((header[124] & 0x80) != 0)
+      {
+        long value = 0;
+        for (int i = 125; i < 136; i++) value = (value << 8) | header[i];
+        return value;
+      }
+      string sizeStr = Encoding.ASCII.GetString(header, 124, 12).TrimEnd('\0', ' ').Trim();
+      if (string.IsNullOrEmpty(sizeStr)) return 0;
+      try { return Convert.ToInt64(sizeStr, 8); }
+      catch { return 0; }
+    }
+
+    private static bool ReadFully(Stream stream, byte[] buffer, int count)
+    {
+      int offset = 0;
+      while (offset < count)
+      {
+        int read = stream.Read(buffer, offset, count - offset);
+        if (read <= 0) return false;
+        offset += read;
+      }
+      return true;
+    }
+
+    private static bool Skip(Stream stream, long count)
+    {
+      byte[] buffer = new byte[81920];
+      while (count > 0)
+      {
+        int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, count));
+        if (read <= 0) return false;
+        count -= read;
+      }
+      return true;
     }
   }
 }

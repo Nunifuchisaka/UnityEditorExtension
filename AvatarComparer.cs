@@ -75,7 +75,7 @@ namespace Nunifuchisaka
     {
       GUILayout.Label("アバター移行の比較確認", EditorStyles.boldLabel);
       DocumentationLink.Draw();
-      EditorGUILayout.HelpBox("Fromを基準に、階層・Transform・Material・BlendShape・アクティブ状態・コンポーネントと参照を比較し、移行漏れや差異を検出します。", MessageType.Info);
+      EditorGUILayout.HelpBox("Fromを基準に、階層・Transform・Material・BlendShape・アクティブ状態・コンポーネントと参照を比較し、移行漏れや差異を検出します。同名の兄弟オブジェクトも警告します。", MessageType.Info);
 
       sourceObject = (GameObject)EditorGUILayout.ObjectField("From", sourceObject, typeof(GameObject), true);
       destinationObject = (GameObject)EditorGUILayout.ObjectField("To", destinationObject, typeof(GameObject), true);
@@ -135,18 +135,19 @@ namespace Nunifuchisaka
 
     public static ComparisonReport Execute(GameObject source, GameObject dest, bool allComponents = true)
     {
-      if (source == null || dest == null)
-      {
-        Debug.LogError("[AvatarComparer] From と To の両方のオブジェクトを指定してください。");
-        return null;
-      }
-      if (source == dest)
-      {
-        Debug.LogError("[AvatarComparer] From と To に同じオブジェクトが指定されています。");
-        return null;
-      }
+      if (!AvatarCopier.ValidateSourceAndDestination(source, dest, "[AvatarComparer]")) return null;
 
       var report = new ComparisonReport();
+
+      // 同名の兄弟オブジェクトは全ツールで正しく対応付けできないため、先に警告する
+      foreach (var duplicate in FindDuplicateSiblings(source))
+      {
+        report.Add(Severity.Warning, "Hierarchy", duplicate.Key, "From側に同名の兄弟オブジェクトがあり、正しく対応付けできません（1つ目だけが比較・コピーの対象になります）", duplicate.Value.gameObject);
+      }
+      foreach (var duplicate in FindDuplicateSiblings(dest))
+      {
+        report.Add(Severity.Warning, "Hierarchy", duplicate.Key, "To側に同名の兄弟オブジェクトがあり、正しく対応付けできません（1つ目だけが比較・コピーの対象になります）", duplicate.Value.gameObject);
+      }
       CompareRecursively(source.transform, dest.transform, source, dest, "", allComponents, report);
 
       // ウィンドウを閉じても確認できるよう、明細もConsoleに出力する
@@ -168,15 +169,16 @@ namespace Nunifuchisaka
       report.ObjectCount++;
       bool isRoot = path.Length == 0;
 
-      // アクティブ状態（SyncActiveState相当）
-      if (src.gameObject.activeSelf != dst.gameObject.activeSelf)
-      {
-        report.Add(Severity.Warning, "Active", path, $"アクティブ状態が不一致（From: {src.gameObject.activeSelf} → To: {dst.gameObject.activeSelf}）", dst.gameObject);
-      }
-
-      // Transform（ルート同士はシーン内の配置が異なって当然なのでスキップ）
+      // ルート同士はシーン内の配置・表示状態が異なって当然なので、アクティブ状態とTransformは比較しない
       if (!isRoot)
       {
+        // アクティブ状態（SyncActiveState相当）
+        if (src.gameObject.activeSelf != dst.gameObject.activeSelf)
+        {
+          report.Add(Severity.Warning, "Active", path, $"アクティブ状態が不一致（From: {src.gameObject.activeSelf} → To: {dst.gameObject.activeSelf}）", dst.gameObject);
+        }
+
+        // Transform
         if (!Approx(src.localPosition, dst.localPosition))
           report.Add(Severity.Warning, "Transform", path, $"localPosition が不一致（From: {Format(src.localPosition)} → To: {Format(dst.localPosition)}）", dst.gameObject);
         if (Quaternion.Angle(src.localRotation, dst.localRotation) > 0.01f)
@@ -504,6 +506,20 @@ namespace Nunifuchisaka
           {
             report.Add(Severity.Error, "Reference", path, $"{label}: 参照先のパスが不一致（From: '{sourcePath}' → To: '{destPath}'）", pingTarget);
           }
+          else if (srcObj is Component srcComponent && dstObj is Component dstComponent)
+          {
+            // 同じオブジェクト上に同型のコンポーネントが複数ある場合、何番目を指しているかまで一致しているべき
+            int sourceIndex = GetComponentIndex(srcComponent);
+            int destIndex = GetComponentIndex(dstComponent);
+            if (srcComponent.GetType() != dstComponent.GetType())
+            {
+              report.Add(Severity.Error, "Reference", path, $"{label}: 参照先コンポーネントの型が不一致（From: {srcComponent.GetType().Name} → To: {dstComponent.GetType().Name}）", pingTarget);
+            }
+            else if (sourceIndex != destIndex)
+            {
+              report.Add(Severity.Error, "Reference", path, $"{label}: '{sourcePath}' の {srcComponent.GetType().Name} を参照していますが、何番目かが不一致です（From: {sourceIndex + 1}番目 → To: {destIndex + 1}番目）", pingTarget);
+            }
+          }
         }
         return;
       }
@@ -558,6 +574,41 @@ namespace Nunifuchisaka
         if (!Approx(a.keys[i].time, b.keys[i].time) || !Approx(a.keys[i].value, b.keys[i].value)) return false;
       }
       return true;
+    }
+
+    private static int GetComponentIndex(Component component)
+    {
+      return Array.IndexOf(component.gameObject.GetComponents(component.GetType()), component);
+    }
+
+    /// <summary>
+    /// root 配下で、同じ階層に同名の兄弟がいるオブジェクトの相対パスを返す（名前ごとに1件）。
+    /// </summary>
+    public static List<string> FindDuplicateSiblingPaths(GameObject root)
+    {
+      return FindDuplicateSiblings(root).Select(pair => pair.Key).ToList();
+    }
+
+    private static List<KeyValuePair<string, Transform>> FindDuplicateSiblings(GameObject root)
+    {
+      var result = new List<KeyValuePair<string, Transform>>();
+      if (root != null) CollectDuplicateSiblings(root.transform, "", result);
+      return result;
+    }
+
+    private static void CollectDuplicateSiblings(Transform parent, string parentPath, List<KeyValuePair<string, Transform>> result)
+    {
+      var seen = new HashSet<string>();
+      var reported = new HashSet<string>();
+      foreach (Transform child in parent)
+      {
+        string childPath = parentPath.Length == 0 ? child.name : parentPath + "/" + child.name;
+        if (!seen.Add(child.name) && reported.Add(child.name))
+        {
+          result.Add(new KeyValuePair<string, Transform>(childPath, child));
+        }
+        CollectDuplicateSiblings(child, childPath, result);
+      }
     }
 
     private static Transform GetTransformOf(UnityEngine.Object obj)

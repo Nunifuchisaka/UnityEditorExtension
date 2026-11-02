@@ -81,11 +81,7 @@ namespace Nunifuchisaka
 
     public static void ExecuteCopy(GameObject source, GameObject dest, TransformCopySettings? settings = null)
     {
-      if (source == null || dest == null)
-      {
-        Debug.LogError("[TransformCopier] From と To の両方のオブジェクトを指定してください。");
-        return;
-      }
+      if (!AvatarCopier.ValidateSourceAndDestination(source, dest, "[TransformCopier]")) return;
 
       // settingsがnull（未指定）の場合、全てtrueのデフォルト設定を使用する
       TransformCopySettings finalSettings = settings ?? new TransformCopySettings
@@ -129,12 +125,23 @@ namespace Nunifuchisaka
           if (settings.positionZ) newPosition.z = sourceChild.localPosition.z;
           destChild.localPosition = newPosition;
 
-          Vector3 sourceEuler = sourceChild.localEulerAngles;
-          Vector3 newEuler = destChild.localEulerAngles;
-          if (settings.rotationX) newEuler.x = sourceEuler.x;
-          if (settings.rotationY) newEuler.y = sourceEuler.y;
-          if (settings.rotationZ) newEuler.z = sourceEuler.z;
-          destChild.localRotation = Quaternion.Euler(newEuler);
+          if (settings.rotationX && settings.rotationY && settings.rotationZ)
+          {
+            // 全軸コピーはQuaternionをそのまま代入する。
+            // オイラー角を経由すると浮動小数点の誤差で値がわずかにずれ、同じ値でもPrefabオーバーライドが付いてしまうため。
+            destChild.localRotation = sourceChild.localRotation;
+          }
+          else if (settings.rotationX || settings.rotationY || settings.rotationZ)
+          {
+            Vector3 sourceEuler = sourceChild.localEulerAngles;
+            Vector3 newEuler = destChild.localEulerAngles;
+            if (settings.rotationX) newEuler.x = sourceEuler.x;
+            if (settings.rotationY) newEuler.y = sourceEuler.y;
+            if (settings.rotationZ) newEuler.z = sourceEuler.z;
+            Quaternion newRotation = Quaternion.Euler(newEuler);
+            // 実質的に変化がない場合は代入しない（誤差だけのPrefabオーバーライドを防ぐ。Quaternionの==は近似比較）
+            if (newRotation != destChild.localRotation) destChild.localRotation = newRotation;
+          }
 
           Vector3 newScale = destChild.localScale;
           if (settings.scaleX) newScale.x = sourceChild.localScale.x;

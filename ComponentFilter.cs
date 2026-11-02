@@ -31,6 +31,14 @@ namespace Nunifuchisaka
     }
 
     /// <summary>
+    /// VRChat SDK の PipelineManager（アップロード先の Blueprint ID を保持する）か。
+    /// </summary>
+    public static bool IsPipelineManager(Component component)
+    {
+      return component != null && component.GetType().Name == "PipelineManager";
+    }
+
+    /// <summary>
     /// 有効化された条件のいずれかにコンポーネントが該当するかを返す。
     /// </summary>
     public static bool Matches(Component component, bool vrc, bool modularAvatar, bool aao, bool floorAdjuster)

@@ -21,22 +21,22 @@ namespace Nunifuchisaka
     /// </summary>
     public static void Execute(GameObject source, GameObject destination)
     {
-      if (source == null || destination == null)
+      if (!AvatarCopier.ValidateSourceAndDestination(source, destination, "[SyncActiveState]")) return;
+
+      Undo.SetCurrentGroupName("Sync Active State");
+      int group = Undo.GetCurrentGroup();
+
+      // ルート同士は同期しない（作業中に移行元アバターを非表示にしていると、移行先まで非表示になってしまうため）
+      foreach (Transform sourceChild in source.transform)
       {
-        Debug.LogError("[SyncActiveState] 同期の実行に失敗しました。SourceまたはDestinationがnullです。");
-        return;
+        Transform destinationChild = destination.transform.Find(sourceChild.name);
+        if (destinationChild != null)
+        {
+          RecursiveSync(sourceChild, destinationChild);
+        }
       }
 
-      // Undo（元に戻す）操作を登録
-      Undo.RecordObject(destination, "Sync Active State");
-      foreach (var transform in destination.GetComponentsInChildren<Transform>(true))
-      {
-        Undo.RecordObject(transform.gameObject, "Sync Active State");
-      }
-
-      // 再帰的にアクティブ状態を同期
-      RecursiveSync(source.transform, destination.transform);
-
+      Undo.CollapseUndoOperations(group);
       Debug.Log($"[SyncActiveState] '{source.name}' のアクティブ状態を '{destination.name}' に同期しました。");
     }
 
@@ -45,7 +45,7 @@ namespace Nunifuchisaka
     {
       GUILayout.Label("オブジェクトのアクティブ状態を同期", EditorStyles.boldLabel);
       DocumentationLink.Draw();
-      EditorGUILayout.HelpBox("Destinationオブジェクトのアクティブ状態を、Sourceオブジェクトの状態に合わせます。\nSourceに存在してDestinationに存在しない子要素は無視されます。", MessageType.Info);
+      EditorGUILayout.HelpBox("Destinationオブジェクトのアクティブ状態を、Sourceオブジェクトの状態に合わせます。\nSourceに存在してDestinationに存在しない子要素は無視されます。\nルートオブジェクト自身のアクティブ状態は同期しません。", MessageType.Info);
 
       sourceObject = (GameObject)EditorGUILayout.ObjectField("Source", sourceObject, typeof(GameObject), true);
       destinationObject = (GameObject)EditorGUILayout.ObjectField("Destination", destinationObject, typeof(GameObject), true);
@@ -68,7 +68,11 @@ namespace Nunifuchisaka
     /// </summary>
     private static void RecursiveSync(Transform source, Transform destination)
     {
-      destination.gameObject.SetActive(source.gameObject.activeSelf);
+      if (destination.gameObject.activeSelf != source.gameObject.activeSelf)
+      {
+        Undo.RecordObject(destination.gameObject, "Sync Active State");
+        destination.gameObject.SetActive(source.gameObject.activeSelf);
+      }
 
       foreach (Transform sourceChild in source)
       {

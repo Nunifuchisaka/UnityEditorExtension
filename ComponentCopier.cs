@@ -19,6 +19,9 @@ namespace Nunifuchisaka
     private bool copyMaComponents = true;
     private bool copyAaoComponents = true;
     private bool copyFloorAdjuster = true;
+    private bool keepDestBlueprintId = true;
+
+    public const string KeepBlueprintIdTooltip = "コピー先のPipelineManagerに既にBlueprint IDがある場合は上書きせずに残します（別アバターとしてアップロード済みのアバターを誤って上書きしないため）。コピー先が空の場合は移行元のIDを引き継ぎます。";
 
     [MenuItem("Tools/Nunifuchisaka/Component Copier...", false, 100)]
     public static void ShowWindow()
@@ -41,21 +44,18 @@ namespace Nunifuchisaka
       copyAaoComponents = EditorGUILayout.Toggle(new GUIContent("AAO TraceAndOptimize", "TraceAndOptimizeコンポーネントをコピーします。"), copyAaoComponents);
       copyFloorAdjuster = EditorGUILayout.Toggle(new GUIContent("FloorAdjuster", "FloorAdjusterコンポーネントをコピーします。"), copyFloorAdjuster);
       EditorGUI.EndDisabledGroup();
+      keepDestBlueprintId = EditorGUILayout.Toggle(new GUIContent("Keep Dest Blueprint ID", KeepBlueprintIdTooltip), keepDestBlueprintId);
 
       GUILayout.Space(20);
       if (GUILayout.Button("Copy Components"))
       {
-        ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents);
+        ExecuteCopy(sourceObject, destinationObject, copyVrcComponents, copyMaComponents, copyAaoComponents, copyFloorAdjuster, copyAllComponents, keepDestBlueprintId);
       }
     }
 
-    public static void ExecuteCopy(GameObject source, GameObject dest, bool doCopyVrc, bool doCopyMa, bool doCopyAao, bool doCopyFloorAdjuster, bool doCopyAll = false)
+    public static void ExecuteCopy(GameObject source, GameObject dest, bool doCopyVrc, bool doCopyMa, bool doCopyAao, bool doCopyFloorAdjuster, bool doCopyAll = false, bool keepDestBlueprintId = true)
     {
-      if (source == null || dest == null)
-      {
-        Debug.LogError("[ComponentCopier] From と To の両方を設定してください。");
-        return;
-      }
+      if (!AvatarCopier.ValidateSourceAndDestination(source, dest, "[ComponentCopier]")) return;
       if (!doCopyAll && !doCopyVrc && !doCopyMa && !doCopyAao && !doCopyFloorAdjuster)
       {
         Debug.LogWarning("[ComponentCopier] コピーする条件を少なくとも1つチェックしてください。");
@@ -69,6 +69,7 @@ namespace Nunifuchisaka
         CopyAao = doCopyAao,
         CopyFloorAdjuster = doCopyFloorAdjuster,
         CopyAll = doCopyAll,
+        KeepDestBlueprintId = keepDestBlueprintId,
       };
 
       Undo.SetCurrentGroupName("Copy Components Recursively");
@@ -101,6 +102,7 @@ namespace Nunifuchisaka
       public bool CopyAao;
       public bool CopyFloorAdjuster;
       public bool CopyAll;
+      public bool KeepDestBlueprintId;
       // Pass 1 で子孫ごと丸ごと複製したオブジェクト（Pass 2 ではコピー済みのためスキップする）
       public readonly HashSet<Transform> ClonedRoots = new HashSet<Transform>();
 
@@ -193,9 +195,18 @@ namespace Nunifuchisaka
           destComponent = Undo.AddComponent(destination.gameObject, componentType);
         }
 
+        // コピー先のBlueprint IDは貼り付けで上書きされるため、事前に控えておく
+        string destBlueprintId = context.KeepDestBlueprintId ? GetBlueprintId(destComponent) : null;
+
         if (UnityEditorInternal.ComponentUtility.CopyComponent(sourceComponent))
         {
           UnityEditorInternal.ComponentUtility.PasteComponentValues(destComponent);
+        }
+
+        if (!string.IsNullOrEmpty(destBlueprintId) && GetBlueprintId(destComponent) != destBlueprintId)
+        {
+          SetBlueprintId(destComponent, destBlueprintId);
+          Debug.Log($"[ComponentCopier] '{destination.name}' のBlueprint ID（{destBlueprintId}）は上書きせずに残しました。", destComponent);
         }
       }
       foreach (Transform sourceChild in source)
@@ -205,6 +216,25 @@ namespace Nunifuchisaka
         if (context.ClonedRoots.Contains(destinationChild)) continue;
         CopyComponentsRecursively(sourceChild, destinationChild, context);
       }
+    }
+
+    // PipelineManager.blueprintId を読み書きする（VRChat SDKへのアセンブリ参照を持たないため SerializedObject 経由）
+    private const string BlueprintIdProperty = "blueprintId";
+
+    private static string GetBlueprintId(Component component)
+    {
+      if (!ComponentFilter.IsPipelineManager(component)) return null;
+      var property = new SerializedObject(component).FindProperty(BlueprintIdProperty);
+      return property != null && property.propertyType == SerializedPropertyType.String ? property.stringValue : null;
+    }
+
+    private static void SetBlueprintId(Component component, string blueprintId)
+    {
+      var serializedObject = new SerializedObject(component);
+      var property = serializedObject.FindProperty(BlueprintIdProperty);
+      if (property == null || property.propertyType != SerializedPropertyType.String) return;
+      property.stringValue = blueprintId;
+      serializedObject.ApplyModifiedProperties();
     }
 
     private static void RemapAllReferencesRecursively(GameObject sourceRoot, GameObject destRoot)
@@ -393,7 +423,15 @@ namespace Nunifuchisaka
       Transform destinationTransform = (path == null) ? destRoot.transform : destRoot.transform.Find(path);
       if (destinationTransform == null) return null;
       if (sourceRefObject is GameObject) return destinationTransform.gameObject;
-      if (sourceRefObject is Component) return destinationTransform.GetComponent(sourceRefObject.GetType());
+      if (sourceRefObject is Component sourceComponent)
+      {
+        // 同じ型のコンポーネントが複数ある場合は、Pass 2 と同じく出現順のn番目同士で対応付ける
+        System.Type type = sourceComponent.GetType();
+        int index = System.Array.IndexOf(sourceGo.GetComponents(type), sourceComponent);
+        Component[] destComponents = destinationTransform.GetComponents(type);
+        if (index < 0 || index >= destComponents.Length) return null;
+        return destComponents[index];
+      }
       return null;
     }
     private static string GetRelativePath(Transform root, Transform child)

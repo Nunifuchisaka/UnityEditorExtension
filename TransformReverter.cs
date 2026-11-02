@@ -1,7 +1,6 @@
 #if UNITY_EDITOR
 using UnityEngine;
 using UnityEditor;
-using System.Collections.Generic;
 
 namespace Nunifuchisaka
 {
@@ -53,58 +52,55 @@ namespace Nunifuchisaka
         Debug.LogError("[TransformReverter] Target object is not selected.");
         return;
       }
-
-      ProcessGameObjectRecursively(targetObject);
-
-      Debug.Log($"[TransformReverter] Process completed for '{targetObject.name}'.");
-    }
-
-    private void ProcessGameObjectRecursively(GameObject go)
-    {
-      if (!PrefabUtility.IsPartOfPrefabInstance(go))
+      if (!revertPosition && !revertRotation && !revertScale)
       {
-        foreach (Transform child in go.transform)
-        {
-          ProcessGameObjectRecursively(child.gameObject);
-        }
+        Debug.LogWarning("[TransformReverter] Revertするプロパティを少なくとも1つチェックしてください。");
         return;
       }
 
-      var newModifications = new List<PropertyModification>();
-
-      PropertyModification[] currentModifications = PrefabUtility.GetPropertyModifications(go);
-      if (currentModifications != null)
+      Undo.SetCurrentGroupName("Revert Transform Properties");
+      int group = Undo.GetCurrentGroup();
+      int revertedCount = 0;
+      try
       {
-        foreach (var mod in currentModifications)
+        // 指定したRoot Object配下のTransformだけを対象にする。
+        // （PrefabUtility.GetPropertyModifications はPrefabインスタンス全体のオーバーライドを返すため使わない）
+        foreach (Transform target in targetObject.GetComponentsInChildren<Transform>(true))
         {
-          if (!(mod.target is Transform))
-          {
-            newModifications.Add(mod);
-            continue;
-          }
+          if (!PrefabUtility.IsPartOfPrefabInstance(target)) continue;
 
-          bool keepModification =
-            (!revertPosition && mod.propertyPath.StartsWith("m_LocalPosition")) ||
-            (!revertRotation && mod.propertyPath.StartsWith("m_LocalRotation")) ||
-            (!revertScale && mod.propertyPath.StartsWith("m_LocalScale"));
-
-          if (keepModification)
+          var serializedObject = new SerializedObject(target);
+          bool reverted = false;
+          if (revertPosition) reverted |= RevertIfOverridden(serializedObject, "m_LocalPosition");
+          if (revertRotation)
           {
-            newModifications.Add(mod);
+            reverted |= RevertIfOverridden(serializedObject, "m_LocalRotation");
+            reverted |= RevertIfOverridden(serializedObject, "m_LocalEulerAnglesHint");
           }
+          if (revertScale) reverted |= RevertIfOverridden(serializedObject, "m_LocalScale");
+          if (reverted) revertedCount++;
         }
       }
-
-      // 実際に変更されるのは各プレハブインスタンス側なので、対象ごとにUndoへ記録する
-      Undo.RegisterCompleteObjectUndo(go, "Revert Transform Properties");
-      Undo.RegisterCompleteObjectUndo(go.transform, "Revert Transform Properties");
-
-      PrefabUtility.SetPropertyModifications(go, newModifications.ToArray());
-
-      foreach (Transform child in go.transform)
+      catch (System.Exception e)
       {
-        ProcessGameObjectRecursively(child.gameObject);
+        Debug.LogError($"[TransformReverter] An error occurred: {e.Message}\n{e.StackTrace}");
       }
+      finally
+      {
+        Undo.CollapseUndoOperations(group);
+      }
+
+      Debug.Log($"[TransformReverter] Process completed for '{targetObject.name}'. {revertedCount} 個のTransformのオーバーライドを元に戻しました。");
+    }
+
+    private static bool RevertIfOverridden(SerializedObject serializedObject, string propertyPath)
+    {
+      SerializedProperty property = serializedObject.FindProperty(propertyPath);
+      if (property == null || !property.prefabOverride) return false;
+      // UserAction でUndoに記録される。Vector3などの親プロパティを指定すると子（x/y/z）もまとめて戻る
+      PrefabUtility.RevertPropertyOverride(property, InteractionMode.UserAction);
+      serializedObject.Update();
+      return true;
     }
   }
 }
