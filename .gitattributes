@@ -1,0 +1,2 @@
+# 改行コードはLFに統一する（WindowsでもLFのままチェックアウトされる）
+* text=auto eol=lf

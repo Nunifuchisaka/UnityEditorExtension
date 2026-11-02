@@ -46,7 +46,7 @@ VRChatアバター用のUnityエディタ拡張集。VCCプロジェクト（Ava
 
 ## 規約
 
-- インデントはスペース2つ。
+- インデントはスペース2つ。改行コードはLF（`.gitattributes` で `eol=lf` を指定済み）。
 - UIラベル・ログ・コメントは日本語と英語が混在（既存ファイルに合わせる）。ログは `[クラス名]` プレフィックス付きで `Debug.Log` / `LogWarning` / `LogError` を使う。
 - `.meta` ファイルはgit管理に**含める**（VPM配布にGUID固定の `.meta` が必須のため）。新規ファイル作成時はUnityが生成した `.meta` をコミットする（原則手動で作らない）。`.cs` をリネームする際はGUID維持のため `.meta` も同名にリネームする。
 - ツールの機能を追加・変更したら `README.md` のツール一覧・使い方も更新する。
@@ -56,7 +56,7 @@ VRChatアバター用のUnityエディタ拡張集。VCCプロジェクト（Ava
 
 - このリポジトリはVPMパッケージ `com.nunifuchisaka.avatar-tools` そのもの。リポジトリ直下がパッケージルートで、`package.json` がVPMマニフェスト、`Nunifuchisaka.Editor.asmdef` がEditor専用アセンブリ定義。
 - リリース手順：`package.json` の `version` を上げてpush → GitHubのActionsで **Build Release** を手動実行（workflow_dispatch）。zipとpackage.jsonがGitHub Releasesに公開され、続けて **Build Repo Listing** が自動実行されてVCC用リスティングがGitHub Pages（`https://nunifuchisaka.github.io/UnityEditorExtension/index.json`）に再生成される。
-- `Website/`（リスティングWebページのテンプレート）・`source.json`（リスティング定義）・`Test.unity`・`CLAUDE.md`・`.github/`・`BoothPackageExporter.cs` は開発用で、配布zipには含まれない（除外リストは `.github/workflows/release.yml`）。ツールの `.cs` を追加したときは除外リストの更新は不要だが、開発専用ファイルを追加したときは除外リストにも足すこと。
+- `Website/`（リスティングWebページのテンプレート）・`source.json`（リスティング定義）・`Test.unity`・`CLAUDE.md`・`.github/`・`.gitignore`・`.gitattributes`・`BoothPackageExporter.cs` は開発用で、配布zipには含まれない（除外リストは `.github/workflows/release.yml`）。ツールの `.cs` を追加したときは除外リストの更新は不要だが、開発専用ファイルを追加したときは除外リストにも足すこと。
 
 ## BOOTH配布
 
