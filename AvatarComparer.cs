@@ -50,6 +50,7 @@ namespace Nunifuchisaka
 
     private GameObject sourceObject;
     private GameObject destinationObject;
+    private bool compareAllComponents = true;
     private ComparisonReport report;
     private Vector2 scrollPosition;
 
@@ -62,11 +63,12 @@ namespace Nunifuchisaka
     /// <summary>
     /// From/Toを指定してウィンドウを開く（AvatarCopierからの連携用）。
     /// </summary>
-    public static void ShowWindow(GameObject source, GameObject dest)
+    public static void ShowWindow(GameObject source, GameObject dest, bool allComponents = true)
     {
       var window = GetWindow<AvatarComparer>("Avatar Comparer");
       window.sourceObject = source;
       window.destinationObject = dest;
+      window.compareAllComponents = allComponents;
     }
 
     private void OnGUI()
@@ -77,13 +79,14 @@ namespace Nunifuchisaka
 
       sourceObject = (GameObject)EditorGUILayout.ObjectField("From", sourceObject, typeof(GameObject), true);
       destinationObject = (GameObject)EditorGUILayout.ObjectField("To", destinationObject, typeof(GameObject), true);
+      compareAllComponents = EditorGUILayout.Toggle(new GUIContent("All Components", "Transform・Renderer・MeshFilterを除くすべてのコンポーネントを比較します（Component Copier の All Components モードに対応）。OFFのときは VRC / Modular Avatar / AAO / FloorAdjuster のみを比較します。"), compareAllComponents);
 
       GUILayout.Space(10);
 
       EditorGUI.BeginDisabledGroup(sourceObject == null || destinationObject == null);
       if (GUILayout.Button("Compare", GUILayout.Height(30)))
       {
-        report = Execute(sourceObject, destinationObject);
+        report = Execute(sourceObject, destinationObject, compareAllComponents);
       }
       EditorGUI.EndDisabledGroup();
 
@@ -130,7 +133,7 @@ namespace Nunifuchisaka
       EditorGUILayout.EndScrollView();
     }
 
-    public static ComparisonReport Execute(GameObject source, GameObject dest)
+    public static ComparisonReport Execute(GameObject source, GameObject dest, bool allComponents = true)
     {
       if (source == null || dest == null)
       {
@@ -144,7 +147,7 @@ namespace Nunifuchisaka
       }
 
       var report = new ComparisonReport();
-      CompareRecursively(source.transform, dest.transform, source, dest, "", report);
+      CompareRecursively(source.transform, dest.transform, source, dest, "", allComponents, report);
 
       // ウィンドウを閉じても確認できるよう、明細もConsoleに出力する
       foreach (var diff in report.Differences)
@@ -160,7 +163,7 @@ namespace Nunifuchisaka
       return report;
     }
 
-    private static void CompareRecursively(Transform src, Transform dst, GameObject sourceRoot, GameObject destRoot, string path, ComparisonReport report)
+    private static void CompareRecursively(Transform src, Transform dst, GameObject sourceRoot, GameObject destRoot, string path, bool allComponents, ComparisonReport report)
     {
       report.ObjectCount++;
       bool isRoot = path.Length == 0;
@@ -184,7 +187,7 @@ namespace Nunifuchisaka
 
       CompareMaterials(src, dst, path, report);
       CompareBlendShapes(src, dst, path, report);
-      CompareComponents(src, dst, sourceRoot, destRoot, path, report);
+      CompareComponents(src, dst, sourceRoot, destRoot, path, allComponents, report);
 
       foreach (Transform srcChild in src)
       {
@@ -192,27 +195,26 @@ namespace Nunifuchisaka
         Transform dstChild = dst.Find(srcChild.name);
         if (dstChild == null)
         {
-          if (ContainsMigrationTarget(srcChild))
+          if (ContainsMigrationTarget(srcChild, allComponents))
           {
             report.Add(Severity.Error, "Hierarchy", childPath, "コピー先に存在しません（コピー対象のPrefabインスタンスまたはコンポーネントを含む）", srcChild.gameObject);
           }
           continue;
         }
-        CompareRecursively(srcChild, dstChild, sourceRoot, destRoot, childPath, report);
+        CompareRecursively(srcChild, dstChild, sourceRoot, destRoot, childPath, allComponents, report);
       }
     }
 
-    private static bool ContainsMigrationTarget(Transform target)
+    private static bool ContainsMigrationTarget(Transform target, bool allComponents)
     {
       if (PrefabUtility.IsAnyPrefabInstanceRoot(target.gameObject)) return true;
       foreach (var component in target.GetComponents<Component>())
       {
-        if (component == null) continue;
-        if (ComponentFilter.Matches(component, true, true, true, true)) return true;
+        if (ComponentFilter.IsCopyTarget(component, true, true, true, true, allComponents)) return true;
       }
       foreach (Transform child in target)
       {
-        if (ContainsMigrationTarget(child)) return true;
+        if (ContainsMigrationTarget(child, allComponents)) return true;
       }
       return false;
     }
@@ -271,10 +273,10 @@ namespace Nunifuchisaka
       }
     }
 
-    private static void CompareComponents(Transform src, Transform dst, GameObject sourceRoot, GameObject destRoot, string path, ComparisonReport report)
+    private static void CompareComponents(Transform src, Transform dst, GameObject sourceRoot, GameObject destRoot, string path, bool allComponents, ComparisonReport report)
     {
       var sourceComponents = src.GetComponents<Component>()
-        .Where(c => c != null && ComponentFilter.Matches(c, true, true, true, true));
+        .Where(c => ComponentFilter.IsCopyTarget(c, true, true, true, true, allComponents));
 
       foreach (var group in sourceComponents.GroupBy(c => c.GetType()))
       {
@@ -302,12 +304,68 @@ namespace Nunifuchisaka
             report.Add(Severity.Warning, "Component", path, $"{label}: enabled が不一致（From: {sourceBehaviour.enabled} → To: {destBehaviour.enabled}）", dst.gameObject);
           }
 
-          foreach (var field in GetSerializedFields(group.Key))
+          // 既存のAnimatorはComponentCopierが意図的に上書きしない（コピー先FBX由来のAvatarアセットを保持する）ため、中身は比較しない
+          if (sourceList[i] is Animator) continue;
+
+          if (sourceList[i] is MonoBehaviour)
           {
-            CompareValue(field.GetValue(sourceList[i]), field.GetValue(destList[i]), field.FieldType,
-                         $"{label}.{field.Name}", path, sourceRoot, destRoot, dst.gameObject, report, 4);
+            foreach (var field in GetSerializedFields(group.Key))
+            {
+              CompareValue(field.GetValue(sourceList[i]), field.GetValue(destList[i]), field.FieldType,
+                           $"{label}.{field.Name}", path, sourceRoot, destRoot, dst.gameObject, report, 4);
+            }
+          }
+          else
+          {
+            // ネイティブ実装の標準コンポーネントはC#フィールドが見えないため、SerializedObject経由で参照だけを比較する
+            CompareSerializedReferences(sourceList[i], destList[i], label, path, sourceRoot, destRoot, dst.gameObject, report);
           }
         }
+      }
+    }
+
+    private static void CompareSerializedReferences(Component src, Component dst, string label, string path,
+                                                    GameObject sourceRoot, GameObject destRoot, UnityEngine.Object pingTarget,
+                                                    ComparisonReport report)
+    {
+      var sourceSerialized = new SerializedObject(src);
+      var destSerialized = new SerializedObject(dst);
+      SerializedProperty property = sourceSerialized.GetIterator();
+      while (property.Next(true))
+      {
+        if (property.propertyType != SerializedPropertyType.ObjectReference) continue;
+        if (IsInternalSerializedProperty(property)) continue;
+
+        SerializedProperty destProperty = destSerialized.FindProperty(property.propertyPath);
+        if (destProperty == null)
+        {
+          // 配列の要素数が異なる場合など。コピー元側で参照が入っている場合のみ報告する
+          if (property.objectReferenceValue != null)
+          {
+            report.Add(Severity.Warning, "Reference", path, $"{label}.{property.propertyPath}: コピー先に対応するプロパティがありません", pingTarget);
+          }
+          continue;
+        }
+        if (destProperty.propertyType != SerializedPropertyType.ObjectReference) continue;
+
+        CompareObjectReference(property.objectReferenceValue, destProperty.objectReferenceValue,
+                               $"{label}.{property.propertyPath}", path, sourceRoot, destRoot, pingTarget, report);
+      }
+    }
+
+    // コンポーネント自身の所属やPrefab接続を表す内部プロパティ。比較対象にしない
+    private static bool IsInternalSerializedProperty(SerializedProperty property)
+    {
+      if (property.depth != 0) return false;
+      switch (property.name)
+      {
+        case "m_GameObject":
+        case "m_CorrespondingSourceObject":
+        case "m_PrefabInstance":
+        case "m_PrefabAsset":
+          return true;
+        default:
+          return false;
       }
     }
 

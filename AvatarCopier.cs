@@ -112,7 +112,7 @@ namespace Nunifuchisaka
 
         // Componentをコピー
         EditorGUILayout.LabelField("Copy Component", EditorStyles.boldLabel);
-        copyAllComponents = EditorGUILayout.Toggle(new GUIContent("All Components", "Transform・Renderer・MeshFilterを除くすべてのコンポーネントをコピーします。"), copyAllComponents);
+        copyAllComponents = EditorGUILayout.Toggle(new GUIContent("All Components", "Transform・Renderer・MeshFilterを除くすべてのコンポーネントをコピーします（既存のAnimatorは上書きしません）。コピー先に存在しないオブジェクトは子孫ごと丸ごと複製します。"), copyAllComponents);
         EditorGUI.BeginDisabledGroup(copyAllComponents);
         copyVrcComponents = EditorGUILayout.Toggle(new GUIContent("VRC", "VRChat SDK関連のコンポーネントをコピーします。"), copyVrcComponents);
         copyMaComponents = EditorGUILayout.Toggle(new GUIContent("ModularAvatar", "Modular Avatar関連のコンポーネントをコピーします。"), copyMaComponents);
@@ -151,7 +151,7 @@ namespace Nunifuchisaka
       {
         if (GUILayout.Button("Compare (移行結果の確認)"))
         {
-          AvatarComparer.ShowWindow(sourceObject, destinationObject);
+          AvatarComparer.ShowWindow(sourceObject, destinationObject, copyAllComponents);
         }
       }
       EditorGUI.EndDisabledGroup();

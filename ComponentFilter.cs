@@ -40,6 +40,27 @@ namespace Nunifuchisaka
              (aao && IsAao(component)) ||
              (floorAdjuster && IsFloorAdjuster(component));
     }
+
+    /// <summary>
+    /// どのモードでもコンポーネントコピーの対象にしないコンポーネント。
+    /// Transformは TransformCopier、Renderer（Material・BlendShape）は MaterialCopier / BlendShapeCopier が担当する。
+    /// MeshFilterはRendererとペアで意味を持つため、Rendererと合わせて除外する。
+    /// （ただし ComponentCopier の All Components モードで新規に複製するオブジェクトは、これらも含めて丸ごと複製される）
+    /// </summary>
+    public static bool IsAlwaysExcluded(Component component)
+    {
+      return component is Transform || component is Renderer || component is MeshFilter;
+    }
+
+    /// <summary>
+    /// ComponentCopier / AvatarComparer のコピー（比較）対象かを返す。
+    /// all が true のときは IsAlwaysExcluded 以外のすべてが対象になる。
+    /// </summary>
+    public static bool IsCopyTarget(Component component, bool vrc, bool modularAvatar, bool aao, bool floorAdjuster, bool all)
+    {
+      if (component == null || IsAlwaysExcluded(component)) return false;
+      return all || Matches(component, vrc, modularAvatar, aao, floorAdjuster);
+    }
   }
 }
 #endif

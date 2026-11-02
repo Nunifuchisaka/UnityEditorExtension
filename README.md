@@ -36,7 +36,7 @@ VRChatアバター向けのUnityエディタ拡張集です。アバターの衣
    3. マテリアルのコピー
    4. BlendShapeウェイトのコピー
    5. アクティブ状態の同期
-   6. コンポーネントのコピー（VRC / Modular Avatar / AAO / FloorAdjuster。階層の複製と参照のリマップを含む）
+   6. コンポーネントのコピー（デフォルトの「All Components」では自作ギミックの独自コンポーネントも含むすべて。階層の複製と参照のリマップを含む）
 4. **Compare (移行結果の確認)** を押して Avatar Comparer で移行漏れがないか確認する
 
 各ステップは個別のボタンでも実行できます。シーンを変更する操作はすべてUndo（Ctrl+Z）で戻せます。
@@ -46,8 +46,8 @@ VRChatアバター向けのUnityエディタ拡張集です。アバターの衣
 | メニュー | 説明 |
 | --- | --- |
 | Avatar Copier... | アバター移行のオーケストレーター。上記の全ステップを一括または個別に実行 |
-| Avatar Comparer... | 移行元と移行先を比較し、移行漏れや差異を検出。階層・Transform・Material・BlendShape・アクティブ状態・コンポーネント数・参照のリマップ漏れをエラー／警告で一覧表示し、`Select` で該当オブジェクトにジャンプできる |
-| Component Copier... | VRC / Modular Avatar / AAO / FloorAdjuster のコンポーネントを階層ごとコピー。3パス構成（①階層の複製 → ②コンポーネントのコピー → ③コピー元階層への参照をコピー先の対応オブジェクトへリマップ）。「All Components」をONにすると、Transform・Renderer・MeshFilterを除くすべてのコンポーネントをコピーする |
+| Avatar Comparer... | 移行元と移行先を比較し、移行漏れや差異を検出。階層・Transform・Material・BlendShape・アクティブ状態・コンポーネント数・参照のリマップ漏れをエラー／警告で一覧表示し、`Select` で該当オブジェクトにジャンプできる。「All Components」（デフォルトON）では Transform・Renderer・MeshFilter 以外のすべてのコンポーネントを比較し、Unity標準コンポーネント（Constraint・Joint など）の参照も検査する。OFFにすると VRC / Modular Avatar / AAO / FloorAdjuster のみを比較 |
+| Component Copier... | コンポーネントを階層ごとコピー。3パス構成（①階層の複製 → ②コンポーネントのコピー → ③コピー元階層への参照をコピー先の対応オブジェクトへリマップ。VRC・MA・自作ギミックなどのスクリプトに加え、Unity標準コンポーネントの参照もリマップする）。「All Components」（デフォルトON）では Transform・Renderer・MeshFilter を除くすべてのコンポーネントをコピーし、コピー先に存在しないオブジェクトは子孫ごと丸ごと複製する（Renderer・マテリアルも含む）。OFFにすると VRC / Modular Avatar / AAO / FloorAdjuster から選んでコピー |
 | Component Remover... | 指定した階層から VRC / Modular Avatar / AAO / FloorAdjuster のコンポーネントを一括削除 |
 | Component Viewer... | 選択中オブジェクトのコンポーネント名を一覧表示し、クリップボードにコピー |
 | Prefab Instantiator... | `From` 直下のPrefabインスタンスを `To` の階層に複製 |
@@ -61,6 +61,8 @@ VRChatアバター向けのUnityエディタ拡張集です。アバターの衣
 ## 注意事項
 
 - オブジェクトの対応付けは**同名の子オブジェクト**で行います。同じ階層に同名の兄弟オブジェクトがあると正しく対応付けられません
-- コンポーネントの判定は型名・名前空間の文字列マッチです（`VRC...`、`ModularAvatar...`、`TraceAndOptimize`、`FloorAdjuster`）
+- 「All Components」をOFFにしたときのコンポーネントの判定は型名・名前空間の文字列マッチです（`VRC...`、`ModularAvatar...`、`TraceAndOptimize`、`FloorAdjuster`）
+- コピー先に既にある Animator は上書きしません（素体を差し替えたときに、移行元の Humanoid Avatar アセットでボーンの対応が壊れるのを防ぐため）
+- 「All Components」でコピー先に存在しないオブジェクトを丸ごと複製したとき、その中にあるPrefabインスタンスはPrefabとの接続が切れた通常のオブジェクトになります
 - Avatar Comparer の比較結果はウィンドウのほかConsoleにも出力されます
 - 各ツールのウィンドウ上部に「ドキュメントを開く」リンクがあり、このREADMEをブラウザで開けます

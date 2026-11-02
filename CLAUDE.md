@@ -13,10 +13,12 @@ VRChatアバター用のUnityエディタ拡張集。VCCプロジェクト（Ava
 - `AvatarCopier` がオーケストレーター。「Copy All」で以下を順に実行する：
   `PrefabInstantiatorLogic.DuplicatePrefabs` → `TransformCopier` → `MaterialCopier` → `BlendShapeCopier` → `SyncActiveState` → `ComponentCopier`
 - コピー元とコピー先のオブジェクト対応付けは、全ツール共通で**同名の子オブジェクト**（相対パス）で行う。同じ階層に同名の兄弟がいると正しく対応しない。
-- VRChat SDK / Modular Avatar / AAO / FloorAdjuster への参照はアセンブリ参照を持たず、型名・名前空間の文字列マッチで判定する。判定ロジックは `ComponentFilter` に一元化されており、新しい判定もここに追加する。これらのパッケージに直接依存するコードを書かないこと。
-- `ComponentCopier` は3パス構成：①階層の複製 → ②コンポーネントのコピー（`GetSortPriority` で PhysBoneCollider → PhysBone の順序を保証。同型複数は出現順のn番目同士で対応付け）→ ③リフレクションでコピー元階層内への参照をコピー先の対応オブジェクトへリマップ。
-  - 「All Components」モード（`doCopyAll`）では `ComponentFilter` の判定をバイパスしてすべてコピーする。ただし Transform / Renderer / MeshFilter は `IsAlwaysExcluded` で常に除外（Transform・Material・BlendShapeは専用ツールの担当のため）。
-  - Pass 3のリマップはC#フィールドのリフレクションで行うため、有効なのはマネージドコンポーネント（VRC / MA などのMonoBehaviour）のみ。ネイティブ実装の標準コンポーネント（例：`Joint.connectedBody`）のシリアライズフィールドはリフレクションから見えず、リマップされない。
+- VRChat SDK / Modular Avatar / AAO / FloorAdjuster への参照はアセンブリ参照を持たず、型名・名前空間の文字列マッチで判定する。判定ロジックは `ComponentFilter` に一元化されており、新しい判定もここに追加する（常時除外の `IsAlwaysExcluded`、コピー／比較対象判定の `IsCopyTarget` もここ）。これらのパッケージに直接依存するコードを書かないこと。
+- `ComponentCopier` は3パス構成：①階層の複製 → ②コンポーネントのコピー（`GetSortPriority` で PhysBoneCollider → PhysBone の順序を保証。同型複数は出現順のn番目同士で対応付け）→ ③コピー元階層内への参照をコピー先の対応オブジェクトへリマップ。
+  - 「All Components」モード（`doCopyAll`）では `ComponentFilter` の種類判定をバイパスしてすべてコピーする。ただし Transform / Renderer / MeshFilter は `ComponentFilter.IsAlwaysExcluded` で常に除外（Transform・Material・BlendShapeは専用ツールの担当のため）。
+  - 「All Components」モードの Pass 1 では、コピー先に存在しないオブジェクトを `Object.Instantiate` で子孫ごと丸ごと複製する（除外対象の Renderer / MeshFilter も含む。見た目のない抜け殻にしないため）。複製したルートは `CopyContext.ClonedRoots` に記録し、Pass 2 ではスキップする。複製範囲内のPrefabインスタンスはPrefab接続が切れる。フィルタモードでは従来どおり空のGameObjectを作る。
+  - コピー先に既に Animator がある場合は上書きしない（コピー先FBX由来の Humanoid Avatar アセットを保持するため。Avatar Comparer も Animator の中身は比較しない）。
+  - Pass 3のリマップは、MonoBehaviour（VRC / MA / 自作ギミック）はC#フィールドのリフレクションで、ネイティブ実装の標準コンポーネント（Constraint・Joint・Cloth・SkinnedMeshRendererのbones など）は `SerializedObject` のObjectReferenceプロパティ走査で行う。`m_GameObject` などの内部プロパティは対象外。
 - シーンを変更する操作は必ずUndo対応する：`Undo.SetCurrentGroupName` + `Undo.GetCurrentGroup` で開始し、`Undo.RegisterCreatedObjectUndo` / `Undo.AddComponent` / `Undo.RecordObject` を使い、最後に `Undo.CollapseUndoOperations` でまとめる。リフレクションでフィールドを書き換えた後は `PrefabUtility.RecordPrefabInstancePropertyModifications` + `EditorUtility.SetDirty` で永続化する。
 
 ## テスト

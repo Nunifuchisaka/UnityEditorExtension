@@ -1,7 +1,7 @@
 {
   "name": "com.nunifuchisaka.avatar-tools",
   "displayName": "Nunifuchisaka Avatar Tools",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "unity": "2022.3",
   "description": "VRChatアバター向けのUnityエディタ拡張集。アバターの衣装替えや素体の差し替えの際に、旧アバターから新アバターへセットアップ（PhysBone・Modular Avatar・マテリアル・BlendShapeなど）を移行する作業を自動化します。",
   "author": {

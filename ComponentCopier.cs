@@ -28,13 +28,13 @@ namespace Nunifuchisaka
 
     private void OnGUI()
     {
-      GUILayout.Label("Copy Specific Components", EditorStyles.boldLabel);
+      GUILayout.Label("Copy Components", EditorStyles.boldLabel);
       DocumentationLink.Draw();
       sourceObject = (GameObject)EditorGUILayout.ObjectField("From", sourceObject, typeof(GameObject), true);
       destinationObject = (GameObject)EditorGUILayout.ObjectField("To", destinationObject, typeof(GameObject), true);
       GUILayout.Space(10);
       EditorGUILayout.LabelField("Conditions", EditorStyles.boldLabel);
-      copyAllComponents = EditorGUILayout.Toggle(new GUIContent("All Components", "Transform・Renderer・MeshFilterを除くすべてのコンポーネントをコピーします。"), copyAllComponents);
+      copyAllComponents = EditorGUILayout.Toggle(new GUIContent("All Components", "Transform・Renderer・MeshFilterを除くすべてのコンポーネントをコピーします（既存のAnimatorは上書きしません）。コピー先に存在しないオブジェクトは子孫ごと丸ごと複製します。"), copyAllComponents);
       EditorGUI.BeginDisabledGroup(copyAllComponents);
       copyVrcComponents = EditorGUILayout.Toggle(new GUIContent("VRC", "VRChat SDK関連のコンポーネントをコピーします。"), copyVrcComponents);
       copyMaComponents = EditorGUILayout.Toggle(new GUIContent("ModularAvatar", "Modular Avatar関連のコンポーネントをコピーします。"), copyMaComponents);
@@ -62,15 +62,24 @@ namespace Nunifuchisaka
         return;
       }
 
+      var context = new CopyContext
+      {
+        CopyVrc = doCopyVrc,
+        CopyMa = doCopyMa,
+        CopyAao = doCopyAao,
+        CopyFloorAdjuster = doCopyFloorAdjuster,
+        CopyAll = doCopyAll,
+      };
+
       Undo.SetCurrentGroupName("Copy Components Recursively");
       int group = Undo.GetCurrentGroup();
       try
       {
         Debug.Log($"[ComponentCopier] ----- Start copying from '{source.name}' to '{dest.name}' -----" + (doCopyAll ? " (All Components)" : ""));
         Debug.Log("[ComponentCopier] Pass 1: Replicating hierarchy...");
-        ReplicateHierarchyRecursively(source.transform, dest.transform, doCopyVrc, doCopyMa, doCopyAao, doCopyFloorAdjuster, doCopyAll);
+        ReplicateHierarchyRecursively(source.transform, dest.transform, context);
         Debug.Log("[ComponentCopier] Pass 2: Copying components...");
-        CopyComponentsRecursively(source.transform, dest.transform, doCopyVrc, doCopyMa, doCopyAao, doCopyFloorAdjuster, doCopyAll);
+        CopyComponentsRecursively(source.transform, dest.transform, context);
         Debug.Log("[ComponentCopier] Pass 3: Remapping references...");
         RemapAllReferencesRecursively(source, dest);
         Debug.Log("[ComponentCopier] ----- All passes completed successfully. -----");
@@ -85,102 +94,117 @@ namespace Nunifuchisaka
       }
     }
 
-    private static void ReplicateHierarchyRecursively(Transform source, Transform parentInDest, bool copyVrc, bool copyMa, bool copyAao, bool copyFloorAdjuster, bool copyAll)
+    private class CopyContext
     {
-      foreach (Transform sourceChild in source)
+      public bool CopyVrc;
+      public bool CopyMa;
+      public bool CopyAao;
+      public bool CopyFloorAdjuster;
+      public bool CopyAll;
+      // Pass 1 で子孫ごと丸ごと複製したオブジェクト（Pass 2 ではコピー済みのためスキップする）
+      public readonly HashSet<Transform> ClonedRoots = new HashSet<Transform>();
+
+      public bool IsTarget(Component component)
       {
-        if (HierarchyHasCopyableComponents(sourceChild, copyVrc, copyMa, copyAao, copyFloorAdjuster, copyAll))
-        {
-          Transform destChild = parentInDest.Find(sourceChild.name);
-          if (destChild == null)
-          {
-            GameObject newDestGo = new GameObject(sourceChild.name);
-            Undo.RegisterCreatedObjectUndo(newDestGo, "Create GameObject");
-            destChild = newDestGo.transform;
-            destChild.SetParent(parentInDest);
-            destChild.localPosition = sourceChild.localPosition;
-            destChild.localRotation = sourceChild.localRotation;
-            destChild.localScale = sourceChild.localScale;
-            // アクティブ状態もコピーする（SyncActiveStateはComponentCopierより先に実行されるため、ここで作られたオブジェクトは対象外）
-            newDestGo.SetActive(sourceChild.gameObject.activeSelf);
-          }
-          ReplicateHierarchyRecursively(sourceChild, destChild, copyVrc, copyMa, copyAao, copyFloorAdjuster, copyAll);
-        }
+        return ComponentFilter.IsCopyTarget(component, CopyVrc, CopyMa, CopyAao, CopyFloorAdjuster, CopyAll);
       }
     }
 
-    private static bool HierarchyHasCopyableComponents(Transform target, bool copyVrc, bool copyMa, bool copyAao, bool copyFloorAdjuster, bool copyAll)
+    private static void ReplicateHierarchyRecursively(Transform source, Transform parentInDest, CopyContext context)
     {
-        foreach(var component in target.GetComponents<Component>())
-        {
-            if (component == null) continue;
-            if (IsAlwaysExcluded(component)) continue;
+      foreach (Transform sourceChild in source)
+      {
+        if (!HierarchyHasCopyableComponents(sourceChild, context)) continue;
 
-            if (copyAll || ComponentFilter.Matches(component, copyVrc, copyMa, copyAao, copyFloorAdjuster)) return true;
-        }
-
-        foreach(Transform child in target)
+        Transform destChild = parentInDest.Find(sourceChild.name);
+        if (destChild == null && context.CopyAll)
         {
-            if (HierarchyHasCopyableComponents(child, copyVrc, copyMa, copyAao, copyFloorAdjuster, copyAll))
-            {
-                return true;
-            }
+          // All Components モード：コピー先に存在しないオブジェクトは子孫ごと丸ごと複製する。
+          // コンポーネントだけを移すと Renderer / MeshFilter（常に除外）が欠けて見た目のないオブジェクトになるため。
+          // Instantiate は位置・回転・スケール・アクティブ状態も引き継ぎ、複製範囲内の参照は複製側へ付け替える。
+          // 複製範囲外（アバターの他の部分）への参照は Pass 3 でリマップする。
+          GameObject clone = Object.Instantiate(sourceChild.gameObject, parentInDest);
+          clone.name = sourceChild.name;
+          Undo.RegisterCreatedObjectUndo(clone, "Duplicate GameObject");
+          context.ClonedRoots.Add(clone.transform);
+          Debug.Log($"[ComponentCopier] '{sourceChild.name}' はコピー先に存在しないため、子孫ごと複製しました。", clone);
+          continue;
         }
-        return false;
+        if (destChild == null)
+        {
+          GameObject newDestGo = new GameObject(sourceChild.name);
+          Undo.RegisterCreatedObjectUndo(newDestGo, "Create GameObject");
+          destChild = newDestGo.transform;
+          destChild.SetParent(parentInDest);
+          destChild.localPosition = sourceChild.localPosition;
+          destChild.localRotation = sourceChild.localRotation;
+          destChild.localScale = sourceChild.localScale;
+          // アクティブ状態もコピーする（SyncActiveStateはComponentCopierより先に実行されるため、ここで作られたオブジェクトは対象外）
+          newDestGo.SetActive(sourceChild.gameObject.activeSelf);
+        }
+        ReplicateHierarchyRecursively(sourceChild, destChild, context);
+      }
     }
 
-    private static void CopyComponentsRecursively(Transform source, Transform destination, bool copyVrc, bool copyMa, bool copyAao, bool copyFloorAdjuster, bool copyAll)
+    private static bool HierarchyHasCopyableComponents(Transform target, CopyContext context)
+    {
+      foreach (var component in target.GetComponents<Component>())
+      {
+        if (context.IsTarget(component)) return true;
+      }
+
+      foreach (Transform child in target)
+      {
+        if (HierarchyHasCopyableComponents(child, context)) return true;
+      }
+      return false;
+    }
+
+    private static void CopyComponentsRecursively(Transform source, Transform destination, CopyContext context)
     {
       Component[] sourceComponents = source.GetComponents<Component>().OrderBy(c => GetSortPriority(c)).ToArray();
       // 同じ型のコンポーネントが同一GameObject上に複数ある場合、型ごとの出現順（n番目同士）で対応付ける
       var typeOccurrence = new Dictionary<System.Type, int>();
       foreach (var sourceComponent in sourceComponents)
       {
-        if (sourceComponent == null) continue;
-        if (IsAlwaysExcluded(sourceComponent))
-        {
-            continue;
-        }
+        if (!context.IsTarget(sourceComponent)) continue;
 
         System.Type componentType = sourceComponent.GetType();
+        int occurrenceIndex;
+        typeOccurrence.TryGetValue(componentType, out occurrenceIndex);
+        typeOccurrence[componentType] = occurrenceIndex + 1;
 
-        if (copyAll || ComponentFilter.Matches(sourceComponent, copyVrc, copyMa, copyAao, copyFloorAdjuster))
+        Component[] destComponents = destination.GetComponents(componentType);
+        Component destComponent;
+        if (occurrenceIndex < destComponents.Length)
         {
-          int occurrenceIndex;
-          typeOccurrence.TryGetValue(componentType, out occurrenceIndex);
-          typeOccurrence[componentType] = occurrenceIndex + 1;
+          destComponent = destComponents[occurrenceIndex];
+          if (destComponent is Animator)
+          {
+            // 既存のAnimatorはコピー先のFBX由来（Humanoid Avatarアセット等）のため上書きしない。
+            // 素体を差し替えた場合に、移行元のAvatarアセットでボーンの対応が壊れるのを防ぐ。
+            Debug.Log($"[ComponentCopier] '{destination.name}' の既存のAnimatorは上書きせずに残しました。", destComponent);
+            continue;
+          }
+          Undo.RecordObject(destComponent, "Modify Component");
+        }
+        else
+        {
+          destComponent = Undo.AddComponent(destination.gameObject, componentType);
+        }
 
-          Component[] destComponents = destination.GetComponents(componentType);
-          Component destComponent;
-          if (occurrenceIndex < destComponents.Length)
-          {
-            destComponent = destComponents[occurrenceIndex];
-            Undo.RecordObject(destComponent, "Modify Component");
-          }
-          else
-          {
-            destComponent = Undo.AddComponent(destination.gameObject, componentType);
-          }
-
-          if (UnityEditorInternal.ComponentUtility.CopyComponent(sourceComponent))
-          {
-            UnityEditorInternal.ComponentUtility.PasteComponentValues(destComponent);
-          }
+        if (UnityEditorInternal.ComponentUtility.CopyComponent(sourceComponent))
+        {
+          UnityEditorInternal.ComponentUtility.PasteComponentValues(destComponent);
         }
       }
       foreach (Transform sourceChild in source)
       {
         Transform destinationChild = destination.Find(sourceChild.name);
-        if (destinationChild != null) CopyComponentsRecursively(sourceChild, destinationChild, copyVrc, copyMa, copyAao, copyFloorAdjuster, copyAll);
+        if (destinationChild == null) continue;
+        if (context.ClonedRoots.Contains(destinationChild)) continue;
+        CopyComponentsRecursively(sourceChild, destinationChild, context);
       }
-    }
-
-    // どのモードでもコピー対象にしないコンポーネント。
-    // Transformは TransformCopier、Renderer（Material・BlendShape）は MaterialCopier / BlendShapeCopier が担当する。
-    // MeshFilterはRendererとペアで意味を持つため、Rendererと合わせて除外する。
-    private static bool IsAlwaysExcluded(Component component)
-    {
-      return component is Transform || component is Renderer || component is MeshFilter;
     }
 
     private static void RemapAllReferencesRecursively(GameObject sourceRoot, GameObject destRoot)
@@ -195,15 +219,64 @@ namespace Nunifuchisaka
         if (component == null) continue;
         if (component is Transform) continue;
 
-        Undo.RecordObject(component, "Remap References");
-        ProcessFieldsRecursively(component, component.GetType(), sourceRoot, destRoot, MaxRemapDepth);
-        // リフレクションでのフィールド書き込みはUnityに変更が通知されないため、明示的に永続化する
-        PrefabUtility.RecordPrefabInstancePropertyModifications(component);
-        EditorUtility.SetDirty(component);
+        if (component is MonoBehaviour)
+        {
+          // マネージドコンポーネント（VRC / MA / 自作ギミックなど）はリフレクションでフィールドを辿る
+          Undo.RecordObject(component, "Remap References");
+          ProcessFieldsRecursively(component, component.GetType(), sourceRoot, destRoot, MaxRemapDepth);
+          // リフレクションでのフィールド書き込みはUnityに変更が通知されないため、明示的に永続化する
+          PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+          EditorUtility.SetDirty(component);
+        }
+        else
+        {
+          // ネイティブ実装の標準コンポーネント（Constraint・Joint・Cloth・SkinnedMeshRendererのbonesなど）は
+          // C#フィールドがリフレクションから見えないため、SerializedObject 経由でリマップする
+          RemapSerializedReferences(component, sourceRoot, destRoot);
+        }
       }
       foreach (Transform child in currentDest)
       {
         RemapAllReferencesRecursivelyInternal(sourceRoot, destRoot, child);
+      }
+    }
+
+    private static void RemapSerializedReferences(Component component, GameObject sourceRoot, GameObject destRoot)
+    {
+      var serializedObject = new SerializedObject(component);
+      SerializedProperty property = serializedObject.GetIterator();
+      bool changed = false;
+      while (property.Next(true))
+      {
+        if (property.propertyType != SerializedPropertyType.ObjectReference) continue;
+        if (IsInternalSerializedProperty(property)) continue;
+
+        UnityEngine.Object current = property.objectReferenceValue;
+        if (current == null) continue;
+        UnityEngine.Object remapped = RemapObject(current, sourceRoot, destRoot);
+        if (remapped != null && remapped != current)
+        {
+          property.objectReferenceValue = remapped;
+          changed = true;
+        }
+      }
+      // ApplyModifiedProperties は Undo 記録と Prefab オーバーライドの記録も行う
+      if (changed) serializedObject.ApplyModifiedProperties();
+    }
+
+    // コンポーネント自身の所属やPrefab接続を表す内部プロパティ。リマップ対象にしない
+    private static bool IsInternalSerializedProperty(SerializedProperty property)
+    {
+      if (property.depth != 0) return false;
+      switch (property.name)
+      {
+        case "m_GameObject":
+        case "m_CorrespondingSourceObject":
+        case "m_PrefabInstance":
+        case "m_PrefabAsset":
+          return true;
+        default:
+          return false;
       }
     }
 
